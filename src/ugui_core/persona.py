@@ -145,10 +145,13 @@ def aggregate(claims: list[Claim], tweets: list[Tweet]) -> list[dict]:
                 "status": "candidate",
             }
         )
+    dimensions = defaultdict(list)
+    for p in patterns:
+        dimensions[(p["category"], p["subject"], p["attribute"])].append(p)
     for p in patterns:
         peers = [
             v
-            for v in patterns
+            for v in dimensions[(p["category"], p["subject"], p["attribute"])]
             if (v["category"], v["subject"], v["attribute"]) == (p["category"], p["subject"], p["attribute"])
             # Co-supported values can coexist, e.g. cold and zaru.
             and (v is p or not set(v["evidence_ids"]).intersection(p["evidence_ids"]))

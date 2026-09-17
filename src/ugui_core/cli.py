@@ -31,6 +31,9 @@ def main():
     imp.add_argument("--owner-id")
     imp.add_argument("--auto-source", action="append", default=["IFTTT", "twittbot"])
     commands.add_parser("stats")
+    analysis = commands.add_parser("analyze", help="Analyze all eligible tweets with resumable checkpoints")
+    analysis.add_argument("--batch-size", type=int, default=8)
+    commands.add_parser("analysis-status", help="Show durable full-analysis progress")
     idx = commands.add_parser("index", help="Build embeddings with the configured model")
     idx.add_argument("--rebuild", action="store_true")
     search = commands.add_parser("search")
@@ -75,6 +78,22 @@ def main():
             }
         elif args.command == "index":
             result = {"indexed": LocalRetriever(store, embedder).index(args.rebuild)}
+        elif args.command == "analysis-status":
+            result = store.snapshot("analysis_status") or {"state": "not_started"}
+        elif args.command == "analyze":
+            from .analysis_job import AnalysisBackend, analyze
+
+            if not 1 <= args.batch_size <= 12:
+                raise ValueError("batch-size must be between 1 and 12")
+            profile = analyze(
+                store,
+                AnalysisBackend(settings),
+                batch_size=args.batch_size,
+                progress=lambda status: print(json.dumps(status), flush=True),
+            )
+            target = settings.data_dir / "persona" / "profile.json"
+            write_private(target, profile)
+            result = {"state": "completed", "profile": str(target), "patterns": len(profile["patterns"])}
         elif args.command == "search":
             result = {
                 "mode": "semantic" if embedder else "lexical",
