@@ -87,7 +87,7 @@ def test_batch_character_limit(make_tweet):
     assert [len(b) for b in batches(tweets)] == [1, 1, 1]
 
 
-def test_analysis_backend_uses_strict_schema_and_qwen_non_thinking(monkeypatch):
+def test_analysis_backend_uses_bounded_output_and_qwen_non_thinking(monkeypatch):
     from ugui_core.analysis_job import AnalysisBackend
     from ugui_core.config import Settings
 
@@ -100,5 +100,19 @@ def test_analysis_backend_uses_strict_schema_and_qwen_non_thinking(monkeypatch):
 
     monkeypatch.setattr(backend, "post", post)
     assert backend.complete([{"role": "user", "content": "[]"}]) == '{"claims": []}'
-    assert payloads[0]["response_format"]["type"] == "json_schema"
+    assert "response_format" not in payloads[0]
+    assert payloads[0]["max_tokens"] == 2048
     assert payloads[0]["messages"][-1]["content"].endswith("/no_think")
+
+
+def test_cooperative_stop_preserves_checkpoints(store, make_tweet):
+    for i in range(1, 5):
+        store.add_tweet(make_tweet(str(i), f"そば {i}", day=i))
+
+    def progress(status):
+        if status["completed"] == 2:
+            (store.path.parent / "analysis.stop").touch()
+
+    assert analyze(store, Model(), batch_size=2, progress=progress, retry_delay=0) is None
+    assert store.snapshot("analysis_status")["state"] == "stopped"
+    assert checkpoint_counts(store, Model.run_key) == (2, 0)

@@ -27,26 +27,8 @@ class AnalysisBackend(OpenAIBackend):
                 "model": self.settings.llm_model,
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": max_tokens,
+                "max_tokens": min(max_tokens, 2048),
                 "stream": False,
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "tweet_claims",
-                        "strict": True,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "claims": {
-                                    "type": "array",
-                                    "items": {**Claim.model_json_schema(), "additionalProperties": False},
-                                }
-                            },
-                            "required": ["claims"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
             },
         )
         try:
@@ -62,7 +44,7 @@ class AnalysisBackend(OpenAIBackend):
 
     @property
     def run_key(self):
-        value = f"analysis-v2|{self.settings.llm_url}|{self.settings.llm_model}|{EXTRACTION_PROMPT}"
+        value = f"analysis-v3|{self.settings.llm_url}|{self.settings.llm_model}|{EXTRACTION_PROMPT}"
         return hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -109,7 +91,7 @@ def batches(tweets, size=8, chars=2800):
         yield group
 
 
-def analyze(store, llm, run_key=None, *, batch_size=8, progress=None, retry_delay=5):
+def analyze(store, llm, run_key=None, *, batch_size=2, progress=None, retry_delay=5):
     """A successful checkpoint means valid JSON was evaluated, including an empty claim list.
 
     Failures are recorded and retried on the next invocation, never counted as analyzed.
@@ -150,13 +132,22 @@ def analyze(store, llm, run_key=None, *, batch_size=8, progress=None, retry_dela
         if progress:
             progress(dict(status))
 
+    class Stopped(Exception):
+        pass
+
+    def check_stop():
+        if (store.path.parent / "analysis.stop").exists():
+            raise Stopped()
+
     def process(group):
+        check_stop()
         try:
             if len(group) == 1 and len(group[0].text) > 2800:
                 tweet = group[0]
                 extracted = []
                 for start in range(0, len(tweet.text), 2400):
                     segment = tweet.model_copy(update={"text": tweet.text[start : start + 2800]})
+                    check_stop()
                     extracted.extend(extract_claims([segment], llm))
             else:
                 extracted = extract_claims(group, llm)
@@ -173,6 +164,7 @@ def analyze(store, llm, run_key=None, *, batch_size=8, progress=None, retry_dela
             else:
                 # One retry handles transient failures without losing earlier checkpoints.
                 time.sleep(retry_delay)
+                check_stop()
                 try:
                     extracted = extract_claims(group, llm)
                     save_result(store, run_key, group[0].id, claims=extracted)
@@ -183,7 +175,11 @@ def analyze(store, llm, run_key=None, *, batch_size=8, progress=None, retry_dela
     consecutive_failed = 0
     for group in batches(pending, batch_size):
         before, _ = checkpoint_counts(store, run_key)
-        process(group)
+        try:
+            process(group)
+        except Stopped:
+            publish("stopped")
+            return None
         after, _ = checkpoint_counts(store, run_key)
         consecutive_failed = consecutive_failed + len(group) if after == before else 0
         publish()

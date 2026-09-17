@@ -32,8 +32,9 @@ def main():
     imp.add_argument("--auto-source", action="append", default=["IFTTT", "twittbot"])
     commands.add_parser("stats")
     analysis = commands.add_parser("analyze", help="Analyze all eligible tweets with resumable checkpoints")
-    analysis.add_argument("--batch-size", type=int, default=8)
+    analysis.add_argument("--batch-size", type=int, default=2)
     commands.add_parser("analysis-status", help="Show durable full-analysis progress")
+    commands.add_parser("analysis-stop", help="Request a checkpoint-safe stop after the current model call")
     idx = commands.add_parser("index", help="Build embeddings with the configured model")
     idx.add_argument("--rebuild", action="store_true")
     search = commands.add_parser("search")
@@ -78,6 +79,9 @@ def main():
             }
         elif args.command == "index":
             result = {"indexed": LocalRetriever(store, embedder).index(args.rebuild)}
+        elif args.command == "analysis-stop":
+            (settings.data_dir / "analysis.stop").touch(mode=0o600)
+            result = {"state": "stop_requested"}
         elif args.command == "analysis-status":
             result = store.snapshot("analysis_status") or {"state": "not_started"}
         elif args.command == "analyze":
@@ -85,12 +89,16 @@ def main():
 
             if not 1 <= args.batch_size <= 12:
                 raise ValueError("batch-size must be between 1 and 12")
+            (settings.data_dir / "analysis.stop").unlink(missing_ok=True)
             profile = analyze(
                 store,
                 AnalysisBackend(settings),
                 batch_size=args.batch_size,
                 progress=lambda status: print(json.dumps(status), flush=True),
             )
+            if profile is None:
+                print(json.dumps({"state": "stopped"}))
+                return
             target = settings.data_dir / "persona" / "profile.json"
             write_private(target, profile)
             result = {"state": "completed", "profile": str(target), "patterns": len(profile["patterns"])}
